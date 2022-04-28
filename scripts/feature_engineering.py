@@ -1,5 +1,6 @@
 from typing import Dict, List, Tuple
 
+from geopy.distance import geodesic
 from joblib import delayed, Parallel
 import numpy as np
 import pandas as pd
@@ -110,3 +111,73 @@ class HostIDEncoder(BaseEstimator, TransformerMixin):
             encode.append(encode_)
         encode = pd.DataFrame(encode)
         return encode
+
+
+class NearestStationsFinder():
+
+    def __init__(self, locations: pd.DataFrame, stations: pd.DataFrame, reduce: bool = False):
+        """Initializer.
+
+        Parameters
+        ----------
+        locations : pd.DataFrame
+            民泊の経度緯度情報。`row_id`, `latitude`, `longitude` を使用する。
+            `row_id` は識別子なので欠損や重複は認められない。
+        stations : pd.DataFrame
+            `station_name`, `latitude`, `longitude` を使用する。
+        reduce : bool, optional
+            True なら `stations` の駅名の重複を削除する。経度緯度は平均値が用いられる。
+        """
+        assert not locations['row_id'].duplicated().any()
+        assert not locations['row_id'].isnull().any()
+        self.locations = locations[['row_id', 'latitude', 'longitude']]
+        if reduce:
+            stations = stations.groupby('station_name').mean().reset_index()
+        self.stations = stations[['station_name', 'latitude', 'longitude']]
+        self._calculate()
+
+    def _calculate(self) -> None:
+        """各民泊と駅の距離を計算する。
+        """
+        distances = []
+        for lat1, longi1 in zip(self.locations['latitude'].to_numpy(), self.locations['latitude'].to_numpy()):
+            distance = [
+                geodesic((lat1, longi1), (lat2, longi2)).km
+                for lat2, longi2 in zip(self.stations['latitude'].to_numpy(), self.stations['latitude'].to_numpy())
+            ]
+            distances.append(distance)
+        self.distances = pd.DataFrame(distances, columns=self.stations['station_name'], index=self.locations['row_id'])
+
+    def get_nearest_stations(self, k: int, row_id) -> Tuple[List[str], List[float]]:
+        """指定された民泊から近い駅の名前と距離を取得する。
+
+        Parameters
+        ----------
+        k : int
+            何駅分の名前と距離を取得するか。
+        row_id : _type_
+            民泊の識別子。存在しない値を指定すると KeyError.
+
+        Returns
+        -------
+        nearest_stations, distances: Tuple[List[str], List[float]]
+            民泊から近い `k` 個の駅情報。(駅名のリスト, 距離のリスト) 形式。
+
+        Raises
+        ------
+        ValueError
+            `k` が int ではない、又は 1 <= `k` <= `self.n_stations` を満たさない時。
+        """
+        if not (isinstance(k, int) and 1 <= k <= self.n_stations):
+            raise ValueError(f'`k` MUST be interger, 1 <= `k` <= {self.n_stations}, but {k} was given.')
+        distances = self.distances.loc[row_id].to_numpy()
+        neighbor_indices = np.argsort(distances)[:k]
+        dist_to_nearest_stations = distances[neighbor_indices]
+        nearest_stations = self.distances.columns[neighbor_indices].tolist()
+        return nearest_stations, dist_to_nearest_stations
+
+    @ property
+    def n_stations(self) -> int:
+        """駅の数
+        """
+        return self.stations.shape[0]
