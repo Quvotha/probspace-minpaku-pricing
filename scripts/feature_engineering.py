@@ -181,3 +181,68 @@ class NearestStationsFinder():
         """駅の数
         """
         return self.stations.shape[0]
+
+
+class NeighborMinpakuCounter:
+
+    def __init__(self, locations: pd.DataFrame):
+        """Initializer.
+
+        Parameters
+        ----------
+        locations : pd.DataFrame
+            民泊の経度緯度。`row_id`, `latitude`, `longitude` を使用する。
+            `row_id` は int, 識別子として使うので欠損や重複は認められない。
+        """
+        assert not locations['row_id'].duplicated().any()
+        assert not locations['row_id'].isnull().any()
+        self.locations = locations[['row_id', 'latitude', 'longitude']]
+
+    def calculate_distance(self, verbose: int = 1, n_jobs: int = -1) -> None:
+        """民泊間の距離を計算する。
+
+        Parameters
+        ----------
+        verbose, n_jobs : int, optional
+            joblob.Parallel に渡す。
+        """
+        def _calculate(id_and_location1, id_and_location2):
+            row_id1, latitude1, longitude1 = id_and_location1
+            row_id2, latitude2, longitude2 = id_and_location2
+            distance = geodesic((latitude1, longitude1), (latitude2, longitude2)).km
+            return (int(row_id1), int(row_id2), distance)
+
+        locations = self.locations.to_numpy()
+        distances = Parallel(n_jobs=n_jobs, verbose=verbose)(
+            delayed(_calculate)(loc1, loc2) for loc1 in locations for loc2 in locations
+        )
+        # distances = []
+        # for loc1 in locations:
+        #     for loc2 in locations:
+        #         row_id1, lat1, longi1 = loc1
+        #         row_id2, lat2, longi2 = loc2
+        #         distance = geodesic((lat1, longi1), (lat2, longi2)).km
+        #         distances.append((row_id1, row_id2, distance))
+        distances = pd.DataFrame(distances, columns=['from', 'to', 'km'])
+        self.distances = pd.pivot_table(data=distances, index=['from'], columns=['to'], values=['km'])
+
+    def count_minpaku(self, row_id: int, km: float) -> int:
+        """指定された民泊から一定距離内にいくつの民泊があるのかをカウントする。
+
+        Parameters
+        ----------
+        row_id : int
+            民泊を識別するID.
+        km : float
+            距離の閾値(km).
+
+        Returns
+        -------
+        count : int
+            `row_id` で指定した民泊から `km` キロ以内にある民泊の数。自分自身は含まない。
+        """
+        if self.distances is None:
+            raise ValueError('`calculate_distance` must be called before.')
+        mask = self.distances.loc[row_id] <= km
+        count = mask.sum() - 1  # -1 は自分自身を除外するため
+        return count
