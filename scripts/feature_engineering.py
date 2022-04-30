@@ -252,7 +252,7 @@ class NeighborMinpakuCounter:
         return count
 
 
-def vincenty_inverse(lat1, lon1, lat2, lon2, ellipsoid=None, default=np.nan):
+def vincenty_inverse(lat1, lon1, lat2, lon2, default=np.nan):
     """2地点の経度緯度情報から距離と方位角を計算する。
 
     ほぼ以下のサイトのコードをコピペした。
@@ -282,9 +282,8 @@ def vincenty_inverse(lat1, lon1, lat2, lon2, ellipsoid=None, default=np.nan):
     if isclose(lat1, lat2) and isclose(lon1, lon2):
         return 0.0
 
-    # 計算時に必要な長軸半径(a)と扁平率(ƒ)を定数から取得し、短軸半径(b)を算出する
-    # 楕円体が未指定の場合はGRS80の値を用いる
-    # a, ƒ = GEODETIC_DATUM.get(ellipsoid, GEODETIC_DATUM.get(ELLIPSOID_GRS80))
+    # 計算時に必要な長軸半径(a)と扁平率(ƒ)
+    # 楕円体はGRS80の値を用いる
     a, ƒ = 6378137.0, 1 / 298.257222101
     b = (1 - ƒ) * a
 
