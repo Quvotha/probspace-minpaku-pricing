@@ -220,10 +220,14 @@ class NearestStations(BaseEstimator, TransformerMixin):
         """
         return self.stations.shape[0]
 
+    @property
+    def indices_(self) -> list:
+        return self.distances_.index.tolist()
 
-class NeighborMinpakuCounter:
 
-    def __init__(self, locations: pd.DataFrame):
+class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
+
+    def __init__(self, n_jobs: int = -1, verbose: int = 1):
         """Initializer.
 
         Parameters
@@ -232,45 +236,43 @@ class NeighborMinpakuCounter:
             民泊の経度緯度。`row_id`, `latitude`, `longitude` を使用する。
             `row_id` は int, 識別子として使うので欠損や重複は認められない。
         """
-        assert not locations['row_id'].duplicated().any()
-        assert not locations['row_id'].isnull().any()
-        self.locations = locations[['row_id', 'latitude', 'longitude']]
+        self.n_jobs = n_jobs
+        self.verbose = verbose
 
-    def calculate_distance(self, verbose: int = 1, n_jobs: int = -1) -> None:
+    def fit(self, X: pd.DataFrame, y=None) -> object:
         """民泊間の距離を計算する。
 
         Parameters
         ----------
-        verbose, n_jobs : int, optional
-            joblob.Parallel に渡す。
+        X : pd.DataFrame
+            民泊の経度緯度情報。`latitude`, `longitude` を使用する。index を民泊のキーに使うので重複は認めない。
+        y : 
+            無視。
+
+        Returns
+        -------
+        self
         """
-        def _calculate(id_and_location1, id_and_location2):
-            row_id1, latitude1, longitude1 = id_and_location1
-            row_id2, latitude2, longitude2 = id_and_location2
-            distance = geodesic((latitude1, longitude1), (latitude2, longitude2)).km
-            return (int(row_id1), int(row_id2), distance)
-
-        locations = self.locations.to_numpy()
-        distances = Parallel(n_jobs=n_jobs, verbose=verbose)(
-            delayed(_calculate)(loc1, loc2) for loc1 in locations for loc2 in locations
+        assert not X.index.duplicated().any()
+        latitude = X['latitude'].tolist()
+        longitude = X['longitude'].tolist()
+        idx_pairs = [(i1, i2) for i1 in range(X.shape[0]) for i2 in range(X.shape[0])]
+        distances = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
+            delayed(_calculate_km)(latitude, longitude, latitude, longitude, i1, i2)
+            for i1, i2 in idx_pairs
         )
-        # distances = []
-        # for loc1 in locations:
-        #     for loc2 in locations:
-        #         row_id1, lat1, longi1 = loc1
-        #         row_id2, lat2, longi2 = loc2
-        #         distance = geodesic((lat1, longi1), (lat2, longi2)).km
-        #         distances.append((row_id1, row_id2, distance))
-        distances = pd.DataFrame(distances, columns=['from', 'to', 'km'])
-        self.distances = pd.pivot_table(data=distances, index=['from'], columns=['to'], values=['km'])
+        data = [(X.index[i1], X.index[i2], km) for i1, i2, km in distances]
+        del distances
+        distances = pd.DataFrame(data, columns=['from', 'to', 'km'])
+        self.distances_ = pd.pivot_table(data=distances, index=['from'], columns=['to'], values=['km'])
 
-    def count_minpaku(self, row_id: int, km: float) -> int:
+    def count_neighbors(self, idx: int, km: float) -> int:
         """指定された民泊から一定距離内にいくつの民泊があるのかをカウントする。
 
         Parameters
         ----------
-        row_id : int
-            民泊を識別するID.
+        idx: int
+            民泊の識別子。存在しない値を指定すると KeyError.
         km : float
             距離の閾値(km).
 
@@ -279,11 +281,13 @@ class NeighborMinpakuCounter:
         count : int
             `row_id` で指定した民泊から `km` キロ以内にある民泊の数。自分自身は含まない。
         """
-        if self.distances is None:
-            raise ValueError('`calculate_distance` must be called before.')
-        mask = self.distances.loc[row_id] <= km
+        mask = self.distances_.loc[idx] <= km
         count = mask.sum() - 1  # -1 は自分自身を除外するため
         return count
+
+    @property
+    def indices_(self) -> list:
+        return self.distances_.index.tolist()
 
 
 def vincenty_inverse(lat1, lon1, lat2, lon2, default=np.nan):
