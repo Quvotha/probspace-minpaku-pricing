@@ -117,49 +117,83 @@ class HostIDEncoder(BaseEstimator, TransformerMixin):
         return encode
 
 
-class NearestStationsFinder():
+def _calculate_km(lat1: List[float],
+                  longi1: List[float],
+                  lat2: List[float],
+                  longi2: List[float],
+                  i1: int, i2: int) -> Tuple[int, int, float]:
+    latitude1 = lat1[i1]
+    longitude1 = longi1[i1]
+    latitude2 = lat2[i2]
+    longitude2 = longi2[i2]
+    return i1, i2, geodesic((latitude1, longitude1), (latitude2, longitude2)).km
 
-    def __init__(self, locations: pd.DataFrame, stations: pd.DataFrame, reduce: bool = False):
+
+class NearestStations(BaseEstimator, TransformerMixin):
+
+    def __init__(self, stations: pd.DataFrame, n_jobs: int = -1, verbose: int = 1):
         """Initializer.
 
         Parameters
         ----------
-        locations : pd.DataFrame
-            民泊の経度緯度情報。`row_id`, `latitude`, `longitude` を使用する。
-            `row_id` は識別子なので欠損や重複は認められない。
         stations : pd.DataFrame
             `station_name`, `latitude`, `longitude` を使用する。
-        reduce : bool, optional
-            True なら `stations` の駅名の重複を削除する。経度緯度は平均値が用いられる。
+            `station_name` に重複があると経度緯度を平均して重複を削除する。
+        n_jobs, verbose : int
+            `fit` で `joblib.Parallel` に渡す。
         """
-        assert not locations['row_id'].duplicated().any()
-        assert not locations['row_id'].isnull().any()
-        self.locations = locations[['row_id', 'latitude', 'longitude']]
-        if reduce:
-            stations = stations.groupby('station_name').mean().reset_index()
-        self.stations = stations[['station_name', 'latitude', 'longitude']]
-        self._calculate()
+        self.stations = stations.groupby('station_name')[['station_name', 'latitude', 'longitude']].mean().reset_index()
+        self.n_jobs = n_jobs
+        self.verbose = verbose
 
-    def _calculate(self) -> None:
+    def fit(self, X: pd.DataFrame, y=None) -> object:
         """各民泊と駅の距離を計算する。
-        """
-        distances = []
-        for lat1, longi1 in zip(self.locations['latitude'].to_numpy(), self.locations['latitude'].to_numpy()):
-            distance = [
-                geodesic((lat1, longi1), (lat2, longi2)).km
-                for lat2, longi2 in zip(self.stations['latitude'].to_numpy(), self.stations['latitude'].to_numpy())
-            ]
-            distances.append(distance)
-        self.distances = pd.DataFrame(distances, columns=self.stations['station_name'], index=self.locations['row_id'])
 
-    def get_nearest_stations(self, k: int, row_id) -> Tuple[List[str], List[float]]:
+        Parameters
+        ----------
+        X : pd.DataFrame
+            民泊の経度緯度情報。`latitude`, `longitude` を使用する。index を民泊のキーに使うので重複は認めない。
+        y : 
+            無視。
+
+        Returns
+        -------
+        self
+        """
+        assert not X.index.duplicated().any()
+        # 民泊と駅の距離を計算する
+        lat1 = X['latitude'].tolist()
+        longi1 = X['longitude'].tolist()
+        lat2 = self.stations['latitude'].tolist()
+        longi2 = self.stations['longitude'].tolist()
+        idx_pairs = [(i1, i2) for i1 in range(X.shape[0]) for i2 in range(self.stations.shape[0])]
+        distances = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
+            delayed(_calculate_km)(lat1, longi1, lat2, longi2, i1, i2) for i1, i2 in idx_pairs
+        )
+
+        # index * 駅名に pivot する
+        data = []  # (index of `X`, statino_name, km)
+        for i1, i2, km in distances:  # まずは (index, 駅名, km) に
+            idx = X.index[i1]
+            station_name = self.stations['station_name'].tolist()[i2]
+            data.append([idx, station_name, km])
+        del distances
+        self.distances_ = pd.pivot_table(
+            data=pd.DataFrame(data=data, columns=['index', 'station_name', 'km']),
+            index='index',
+            columns='station_name',
+            values='km'
+        )
+        return self
+
+    def kneighbors(self, k: int, idx) -> Tuple[List[str], List[float]]:
         """指定された民泊から近い駅の名前と距離を取得する。
 
         Parameters
         ----------
         k : int
             何駅分の名前と距離を取得するか。
-        row_id : _type_
+        idx :
             民泊の識別子。存在しない値を指定すると KeyError.
 
         Returns
@@ -174,10 +208,10 @@ class NearestStationsFinder():
         """
         if not (isinstance(k, int) and 1 <= k <= self.n_stations):
             raise ValueError(f'`k` MUST be interger, 1 <= `k` <= {self.n_stations}, but {k} was given.')
-        distances = self.distances.loc[row_id].to_numpy()
+        distances = self.distances_.loc[idx].to_numpy()
         neighbor_indices = np.argsort(distances)[:k]
         dist_to_nearest_stations = distances[neighbor_indices]
-        nearest_stations = self.distances.columns[neighbor_indices].tolist()
+        nearest_stations = self.distances_.columns[neighbor_indices].tolist()
         return nearest_stations, dist_to_nearest_stations
 
     @ property
