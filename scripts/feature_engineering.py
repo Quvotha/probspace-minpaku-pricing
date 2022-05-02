@@ -1,6 +1,8 @@
-from math import isclose, radians, atan, tan, sin, cos, sqrt, atan2, degrees, pi
-from typing import Dict, List, Tuple
 
+from math import isclose, radians, atan, tan, sin, cos, sqrt, atan2, degrees, pi
+from typing import Dict, List, Tuple, Iterable
+
+import fasttext
 from geopy.distance import geodesic
 from joblib import delayed, Parallel
 import numpy as np
@@ -8,7 +10,9 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-
+import torch
+from transformers import BertTokenizer
+import transformers
 
 _BASE_DATE = '2015-05-01'
 
@@ -444,3 +448,134 @@ class LocationClustering(BaseEstimator, TransformerMixin):
             features.append([cluster_id, distance, azimuth])
         features = pd.DataFrame(data=features, index=X.index, columns=['cluster_id', 'km_from_center', 'azimuth'])
         return features
+
+
+class BertSequenceVectorizer:
+
+    def __init__(self, model_name: str, max_len: int):
+        """Initializer.
+
+        このクラスは以下の記事で紹介されているものを微改修したもの。
+        https://www.guruguru.science/competitions/16/discussions/fb792c87-6bad-445d-aa34-b4118fc378c1/
+
+        `model_name`, `max_len` をパラメータ化した。
+        Bert model を明示的に evaluation mode にするようにした。`vectorize` は torch.inference_mode で実行するようにした。
+        """
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model_name = model_name
+        self.tokenizer = BertTokenizer.from_pretrained(self.model_name)
+        self.bert_model = transformers.BertModel.from_pretrained(self.model_name)
+        self.bert_model = self.bert_model.to(self.device)
+        self.bert_model.eval()
+        self.max_len = max_len
+
+    @torch.inference_mode()
+    def vectorize(self, sentence: str) -> np.array:
+        inp = self.tokenizer.encode(sentence)
+        len_inp = len(inp)
+
+        if len_inp >= self.max_len:
+            inputs = inp[:self.max_len]
+            masks = [1] * self.max_len
+        else:
+            inputs = inp + [0] * (self.max_len - len_inp)
+            masks = [1] * len_inp + [0] * (self.max_len - len_inp)
+
+        inputs_tensor = torch.tensor([inputs], dtype=torch.long).to(self.device)
+        masks_tensor = torch.tensor([masks], dtype=torch.long).to(self.device)
+
+        bert_out = self.bert_model(inputs_tensor, masks_tensor)
+        seq_out, pooled_out = bert_out['last_hidden_state'], bert_out['pooler_output']
+        if torch.cuda.is_available():
+            return seq_out[0][0].cpu().detach().numpy()  # 0番目は [CLS] token, 768 dim の文章特徴量
+        else:
+            return seq_out[0][0].detach().numpy()
+
+
+class LanguageWiseBertVectorizer(BaseEstimator, TransformerMixin):
+    LABELS = {
+        'english': '__label__en',
+        'japanese': '__label__ja',
+        'chinese': '__label__zh',
+    }
+
+    def __init__(
+            self, model_name_en: str, model_name_ja: str, model_name_zh: str, language_detection_model_path: str,
+            max_len: int = 128):
+        """Initializer.
+
+        言語識別モデルで判定した言語によって適切な BERT pretrained model を使いベクトル化する。
+        英語、日本語、中国語のみ識別し、他は一律で英語扱いする。
+
+        Parameters
+        ----------
+        model_name_en, model_name_ja, model_name_zh : str
+            それぞれ英語、日本語、中国語の BERT pretrained model の名称。
+            Huggingface の repository からダウンロードしてくるので repository に存在するモデルを指定すること。
+        fattext_model_path : str
+            言語識別モデルのパス。
+            以下のサイトから『lid.176.bin』をダウンロードして使用するのでそのパスを指定する。
+            https://fasttext.cc/docs/en/language-identification.html
+            これらのモデルは Refferences [1], [2] の文献を参考に開発されたもの。
+        max_len : int, optional
+            ベクトル化する文章長の最大値。
+
+        Refferences
+        -----------
+        [1] A. Joulin, E. Grave, P. Bojanowski, T. Mikolov, Bag of Tricks for Efficient Text Classification
+        [2] A. Joulin, E. Grave, P. Bojanowski, M. Douze, H. Jégou, T. Mikolov, FastText.zip: Compressing text classification models
+        """
+        self.language_detection_model = fasttext.load_model(language_detection_model_path)
+        self.bert_model_en = BertSequenceVectorizer(model_name_en, max_len)
+        self.bert_model_ja = BertSequenceVectorizer(model_name_ja, max_len)
+        self.bert_model_zh = BertSequenceVectorizer(model_name_zh, max_len)
+
+        self.model_name_en = model_name_en
+        self.model_name_ja = model_name_ja
+        self.model_name_zh = model_name_zh
+        self.language_detection_model_path = language_detection_model_path
+        self.max_len = max_len
+
+    def fit(self, X=None, y=None) -> object:
+        """何もしない"""
+        return self
+
+    def transform(self, X: Iterable[str]) -> pd.DataFrame:
+        """文章の埋め込みを Bert model によって得る。
+
+        Parameters
+        ----------
+        X : Iterable[str]
+            埋め込みを得たい文章を iterable で渡す。
+
+        Returns
+        -------
+        embedding_label_probability : pd.DataFrame, shape = (X.shape[0]. 770)
+            Bert model で得た768次元の埋め込みに language detection model で得た言語のラベルと確率をくっつけたもの。
+        """
+        assert not X.index.duplicated().any()
+        # 埋め込み、言語を示すラベル、確率
+        embedding, labels, probabilities = [], [], []
+        for sentence in X:
+            # 言語識別モデルで各文章が何語かを予測する
+            # 予測した言語に応じて埋め込みの取得に使う Bert model を買える
+            prediction = self.language_detection_model.predict(sentence)
+            probability = prediction[1][0]
+            probabilities.append(probability)
+            label = prediction[0][0]
+            labels.append(label)
+            if label == self.LABELS['english']:
+                emb = self.bert_model_en.vectorize(sentence)
+            elif label == self.LABELS['japanese']:
+                emb = self.bert_model_ja.vectorize(sentence)
+            elif label == self.LABELS['chinese']:
+                emb = self.bert_model_zh.vectorize(sentence)
+            else:
+                emb = self.bert_model_en.vectorize(sentence)
+            embedding.append(emb)
+        embedding = pd.DataFrame(embedding, index=X.index)
+        n_dim = embedding.shape[1]
+        embedding.columns = [f'embedding{i + 1}' for i in range(n_dim)]
+        labels = pd.DataFrame(labels, index=X.index, columns=['language_label'])
+        probabilities = pd.DataFrame(probabilities, index=X.index, columns=['language_probability'])
+        return pd.concat([labels, probabilities, embedding], axis=1)
