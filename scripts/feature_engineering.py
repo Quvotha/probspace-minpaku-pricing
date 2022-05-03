@@ -493,7 +493,8 @@ class BertSequenceVectorizer:
 
 
 class LanguageWiseBertVectorizer(BaseEstimator, TransformerMixin):
-    LABELS = {
+
+    LANGUAGE_LABELS = {
         'english': '__label__en',
         'japanese': '__label__ja',
         'chinese': '__label__zh',
@@ -564,11 +565,11 @@ class LanguageWiseBertVectorizer(BaseEstimator, TransformerMixin):
             probabilities.append(probability)
             label = prediction[0][0]
             labels.append(label)
-            if label == self.LABELS['english']:
+            if label == self.LANGUAGE_LABELS['english']:
                 emb = self.bert_model_en.vectorize(sentence)
-            elif label == self.LABELS['japanese']:
+            elif label == self.LANGUAGE_LABELS['japanese']:
                 emb = self.bert_model_ja.vectorize(sentence)
-            elif label == self.LABELS['chinese']:
+            elif label == self.LANGUAGE_LABELS['chinese']:
                 emb = self.bert_model_zh.vectorize(sentence)
             else:
                 emb = self.bert_model_en.vectorize(sentence)
