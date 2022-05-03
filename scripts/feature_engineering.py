@@ -640,13 +640,13 @@ class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
     }
     SEP = ' '
 
-    def __init__(self, fattext_model_path: str, split_mode: Optional[Literal['A', 'B', 'C']] = 'C',
+    def __init__(self, language_detection_model_path: str, split_mode: Optional[Literal['A', 'B', 'C']] = 'C',
                  filter_func: Optional[Callable[[sudachipy.Morpheme], str]] = None):
         """Initializer.
 
         Parameters
         ----------
-        fattext_model_path : str
+        language_detection_model_path : str
             LanguageWiseBertVectorizer の同名引数と同じ意味。
         split_mode : Optional[Literal[&#39;A&#39;, &#39;B&#39;, &#39;C&#39;]], optional
             sudachipy の tokenizer の SplitMode に指定する値。
@@ -656,8 +656,8 @@ class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
             空白文字列を返すと bag of words から除外される。
         """
 
-        self.model = fasttext.load_model(fattext_model_path)
-        self.fattext_model_path = fattext_model_path
+        self.model = fasttext.load_model(language_detection_model_path)
+        self.fattext_model_path = language_detection_model_path
         self.split_mode = split_mode
         self._sudachipy_tokenizer = sudachipy.dictionary.Dictionary().create()
         self._mode = sudachipy.tokenizer.Tokenizer.SplitMode.__getattribute__(split_mode)
