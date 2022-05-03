@@ -157,7 +157,7 @@ class NearestStations(BaseEstimator, TransformerMixin):
         ----------
         X : pd.DataFrame
             民泊の経度緯度情報。`latitude`, `longitude` を使用する。index を民泊のキーに使うので重複は認めない。
-        y : 
+        y :
             無視。
 
         Returns
@@ -236,9 +236,8 @@ class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
 
         Parameters
         ----------
-        locations : pd.DataFrame
-            民泊の経度緯度。`row_id`, `latitude`, `longitude` を使用する。
-            `row_id` は int, 識別子として使うので欠損や重複は認められない。
+        n_jobs, verbose : int
+            `fit` で `joblib.Parallel` に渡す。
         """
         self.n_jobs = n_jobs
         self.verbose = verbose
@@ -250,7 +249,7 @@ class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
         ----------
         X : pd.DataFrame
             民泊の経度緯度情報。`latitude`, `longitude` を使用する。index を民泊のキーに使うので重複は認めない。
-        y : 
+        y :
             無視。
 
         Returns
@@ -258,17 +257,49 @@ class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
         self
         """
         assert not X.index.duplicated().any()
-        latitude = X['latitude'].tolist()
-        longitude = X['longitude'].tolist()
-        idx_pairs = [(i1, i2) for i1 in range(X.shape[0]) for i2 in range(X.shape[0])]
-        distances = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
-            delayed(_calculate_km)(latitude, longitude, latitude, longitude, i1, i2)
-            for i1, i2 in idx_pairs
+
+        def _distances(latitude_values: Tuple[float],
+                       longitude_values: Tuple[float],
+                       i1: int) -> Tuple[int, List[float]]:
+            lat1, longi1 = latitude_values[i1], longitude_values[i1]
+            distances = [
+                geodesic((lat1, longi1), (latitude_values[i2], longitude_values[i2])).km
+                for i2 in range(len(latitude_values))
+            ]
+            return i1, distances
+
+        latitude_values = tuple(X['latitude'].tolist())
+        longitude_values = tuple(X['longitude'].tolist())
+
+        indices_and_distances = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
+            delayed(_distances)(latitude_values, longitude_values, i)
+            for i in range(len(latitude_values))
         )
-        data = [(X.index[i1], X.index[i2], km) for i1, i2, km in distances]
-        del distances
-        distances = pd.DataFrame(data, columns=['from', 'to', 'km'])
-        self.distances_ = pd.pivot_table(data=distances, index=['from'], columns=['to'], values=['km'])
+        data, indices = [], []
+        for i, distances in indices_and_distances:
+            indices.append(X.index[i])
+            data.append(distances)
+        del indices_and_distances
+        self.distances_ = pd.DataFrame(data=data, index=indices, columns=indices)
+        return self
+
+        # latitude = X['latitude'].tolist()
+        # longitude = X['longitude'].tolist()
+        # idx_pairs = [(i1, i2) for i1 in range(X.shape[0]) for i2 in range(X.shape[0])]
+        # distances = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
+        #     delayed(_calculate_km)(latitude, longitude, latitude, longitude, i1, i2)
+        #     for i1, i2 in idx_pairs
+        # )
+        # data = [(X.index[i1], X.index[i2], km) for i1, i2, km in distances]
+        # del distances
+        # distances = pd.DataFrame(data, columns=['from', 'to', 'km'])
+
+        # distances = []
+        # for idx1, lat1, longi1 in zip(X.index, X['latitude'].to_numpy(), X['longitude'].to_numpy()):
+        #     for idx2, lat2, longi2 in zip(X.index, X['latitude'].to_numpy(), X['longitude'].to_numpy()):
+        #         distances.append((idx1, idx2, geodesic((lat1, longi1), (lat2, longi2)).km))
+        # distances = pd.DataFrame(data=distances, columns=['from', 'to', 'km'])
+        # self.distances_ = pd.pivot_table(data=distances, index=['from'], columns=['to'], values=['km'])
 
     def count_neighbors(self, idx: int, km: float) -> int:
         """指定された民泊から一定距離内にいくつの民泊があるのかをカウントする。
@@ -289,7 +320,7 @@ class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
         count = mask.sum() - 1  # -1 は自分自身を除外するため
         return count
 
-    @property
+    @ property
     def indices_(self) -> list:
         return self.distances_.index.tolist()
 
@@ -376,7 +407,7 @@ def vincenty_inverse(lat1, lon1, lat2, lon2, default=np.nan):
     A = 1 + u2 / 16384 * (4096 + u2 * (-768 + u2 * (320 - 175 * u2)))
     B = u2 / 1024 * (256 + u2 * (-128 + u2 * (74 - 47 * u2)))
     Δσ = B * sinσ * (cos2σm + B / 4 * (cosσ * (-1 + 2 * cos2σm **
-                     2) - B / 6 * cos2σm * (-3 + 4 * sinσ ** 2) * (-3 + 4 * cos2σm ** 2)))
+                                               2) - B / 6 * cos2σm * (-3 + 4 * sinσ ** 2) * (-3 + 4 * cos2σm ** 2)))
 
     # 2点間の楕円体上の距離
     s = b * A * (σ - Δσ)
@@ -401,8 +432,8 @@ class LocationClustering(BaseEstimator, TransformerMixin):
         Parameters
         ----------
         X : pd.DataFrame
-            経度緯度を `latitude`, `longitude` のカラムに設定しておくこと。 
-        y : 
+            経度緯度を `latitude`, `longitude` のカラムに設定しておくこと。
+        y :
             無視する。
 
         Returns
@@ -469,7 +500,7 @@ class BertSequenceVectorizer:
         self.bert_model.eval()
         self.max_len = max_len
 
-    @torch.inference_mode()
+    @ torch.inference_mode()
     def vectorize(self, sentence: str) -> np.array:
         inp = self.tokenizer.encode(sentence)
         len_inp = len(inp)
