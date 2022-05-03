@@ -19,30 +19,6 @@ import transformers
 _BASE_DATE = '2015-05-01'
 
 
-def _encode_1_host_id(host_df: pd.DataFrame, pairs: List[Tuple[str, str]],
-                      continuous_features: List[str]) -> Dict[str, float]:
-    assert host_df['host_id'].nunique() == 1
-    encode = {'host_id': host_df['host_id'][0]}
-
-    # `room_type`, `neighbourhood` で持ってる民泊の特徴を数値化する
-    for n, r in pairs:
-        encode[f'NR_{n}_{r}'] = host_df.query(f'neighbourhood == "{n}" and room_type == "{r}"').shape[0]
-
-    # Frequency encoding
-    encode['Freq_host_id'] = host_df.shape[0]
-
-    # 数値項目の集計値を特徴として加える
-    for c in continuous_features:
-        encode[f'Min{c}'] = host_df[c].min()
-        encode[f'Max{c}'] = host_df[c].max()
-        encode[f'Range{c}'] = encode[f'Max{c}'] - encode[f'Min{c}']
-        encode[f'Mean{c}'] = host_df[c].mean()
-        encode[f'Median{c}'] = host_df[c].median()
-        std = host_df[c].std()
-        encode[f'Std{c}'] = 0. if np.isnan(std) else std
-    return encode
-
-
 class HostIDEncoder(BaseEstimator, TransformerMixin):
     """`host_id` をエンコードする。
 
@@ -76,8 +52,10 @@ class HostIDEncoder(BaseEstimator, TransformerMixin):
         self
             訓練済みのエンコーダー。
         """
+        self.room_types_ = X['room_type'].unique()
+        self.neighbourhood_ = X['neighbourhood'].unique()
         self.pairs_ = [
-            (n, r) for n in X['neighbourhood'].unique() for r in X['room_type'].unique().tolist()
+            (n, r) for n in X['neighbourhood'].unique() for r in X['room_type'].unique()
             if isinstance(n, str) and isinstance(r, str)
         ]
         return self
@@ -103,8 +81,12 @@ class HostIDEncoder(BaseEstimator, TransformerMixin):
             encode_ = {'host_id': host_id}
 
             # `room_type`, `neighbourhood` で持ってる民泊の特徴を数値化する
+            for r in self.room_types_:
+                encode_[f'Room_type[{r}]'] = host_df.query(f'room_type == "{r}"').shape[0]
+            for n in self.neighbourhood_:
+                encode_[f'Neighborhood[{n}]'] = host_df.query(f'neighbourhood == "{n}"').shape[0]
             for n, r in self.pairs_:
-                encode_[f'NR_{n}_{r}'] = host_df.query(f'neighbourhood == "{n}" and room_type == "{r}"').shape[0]
+                encode_[f'NR[{n}][{r}]'] = host_df.query(f'neighbourhood == "{n}" and room_type == "{r}"').shape[0]
 
             # Frequency encoding
             encode_['Freq_host_id'] = host_df.shape[0]
@@ -113,7 +95,7 @@ class HostIDEncoder(BaseEstimator, TransformerMixin):
             for c in self.continuous_features:
                 encode_[f'Min_{c}'] = host_df[c].min()
                 encode_[f'Max_{c}'] = host_df[c].max()
-                encode_[f'Range_{c}'] = encode_[f'Max{c}'] - encode_[f'Min{c}']
+                encode_[f'Range_{c}'] = encode_[f'Max_{c}'] - encode_[f'Min_{c}']
                 encode_[f'Mean_{c}'] = host_df[c].mean()
                 encode_[f'Median_{c}'] = host_df[c].median()
                 std = host_df[c].std()
