@@ -1,15 +1,17 @@
 
 from math import isclose, radians, atan, tan, sin, cos, sqrt, atan2, degrees, pi
-from typing import Dict, List, Tuple, Iterable
+from typing import Dict, List, Tuple, Iterable, Callable, Optional, Literal
 
 import fasttext
 from geopy.distance import geodesic
+import jieba
 from joblib import delayed, Parallel
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+import sudachipy
 import torch
 from transformers import BertTokenizer
 import transformers
@@ -611,3 +613,82 @@ class LanguageWiseBertVectorizer(BaseEstimator, TransformerMixin):
         labels = pd.DataFrame(labels, index=X.index, columns=['language_label'])
         probabilities = pd.DataFrame(probabilities, index=X.index, columns=['language_probability'])
         return pd.concat([labels, probabilities, embedding], axis=1)
+
+
+def return_dictionary_form(morpheme: sudachipy.Morpheme) -> str:
+    """sudachipy の形態素より辞書型を得る。
+
+    Parameters
+    ----------
+    morpheme : sudachipy.Morpheme
+        形態素。
+
+    Returns
+    -------
+    str
+        `dictionary_form`.
+    """
+    return morpheme.dictionary_form()
+
+
+class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
+
+    LANGUAGE_LABELS = {
+        'english': '__label__en',
+        'japanese': '__label__ja',
+        'chinese': '__label__zh',
+    }
+    SEP = ' '
+
+    def __init__(self, fattext_model_path: str, split_mode: Optional[Literal['A', 'B', 'C']] = 'C',
+                 filter_func: Optional[Callable[[sudachipy.Morpheme], str]] = None):
+        """Initializer.
+
+        Parameters
+        ----------
+        fattext_model_path : str
+            LanguageWiseBertVectorizer の同名引数と同じ意味。
+        split_mode : Optional[Literal[&#39;A&#39;, &#39;B&#39;, &#39;C&#39;]], optional
+            sudachipy の tokenizer の SplitMode に指定する値。
+        filter_func : Optional[Callable[[sudachipy.Morpheme], str]], optional
+            sudachipy の tokenization で得られた個々の形態素に大して適応する関数。
+            デフォルトでは形態素の辞書型を返す関数が適応される。
+            空白文字列を返すと bag of words から除外される。
+        """
+
+        self.model = fasttext.load_model(fattext_model_path)
+        self.fattext_model_path = fattext_model_path
+        self.split_mode = split_mode
+        self._sudachipy_tokenizer = sudachipy.dictionary.Dictionary().create()
+        self._mode = sudachipy.tokenizer.Tokenizer.SplitMode.__getattribute__(split_mode)
+        self.filter_func = filter_func or return_dictionary_form
+
+    def fit(self, X=None, y=None) -> object:
+        return self
+
+    def transform(self, X: Iterable[str]) -> List[str]:
+        BOWs = []
+        for sentence in X:
+            prediction = self.model.predict(sentence)
+            label = prediction[0][0]
+            if label == self.LANGUAGE_LABELS['japanese']:
+                bag_of_words = self.tokenize_ja(sentence)
+            elif label == self.LANGUAGE_LABELS['chinese']:
+                bag_of_words = self.tokenize_zh(sentence)
+            else:
+                bag_of_words = sentence
+            BOWs.append(bag_of_words)
+        return BOWs
+
+    def tokenize_zh(self, sentence: str) -> str:
+        bag_of_words = self.SEP.join(jieba.lcut(sentence))
+        return bag_of_words
+
+    def tokenize_ja(self, sentence: str) -> str:
+        bag_of_words = []
+        for morpheme in self._sudachipy_tokenizer.tokenize(sentence, self._mode):
+            word = self.filter_func(morpheme)
+            if word:
+                bag_of_words.append(word)
+        bag_of_words = self.SEP.join(bag_of_words)
+        return bag_of_words
