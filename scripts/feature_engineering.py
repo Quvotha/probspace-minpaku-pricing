@@ -12,6 +12,7 @@ from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 import sudachipy
+from sudachipy import dictionary, tokenizer
 import torch
 from transformers import BertTokenizer
 import transformers
@@ -641,8 +642,8 @@ class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
         self.model = fasttext.load_model(language_detection_model_path)
         self.fattext_model_path = language_detection_model_path
         self.split_mode = split_mode
-        self._sudachipy_tokenizer = sudachipy.dictionary.Dictionary().create()
-        self._mode = sudachipy.tokenizer.Tokenizer.SplitMode.__getattribute__(split_mode)
+        self._sudachipy_tokenizer = dictionary.Dictionary().create()
+        self._mode = tokenizer.Tokenizer.SplitMode.__getattribute__(split_mode)
         self.filter_func = filter_func or return_dictionary_form
 
     def fit(self, X=None, y=None) -> object:
