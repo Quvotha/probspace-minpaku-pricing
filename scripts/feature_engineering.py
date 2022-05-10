@@ -1,6 +1,6 @@
 
 from math import isclose, radians, atan, tan, sin, cos, sqrt, atan2, degrees, pi
-from typing import Dict, List, Tuple, Iterable, Callable, Optional, Literal
+from typing import List, Tuple, Iterable, Callable, Optional, Literal
 
 import fasttext
 from geopy.distance import geodesic
@@ -17,7 +17,12 @@ import torch
 from transformers import BertTokenizer
 import transformers
 
-_BASE_DATE = '2015-05-01'
+# テキストが何語で書かれているか(Fasttext の言語予測モデルが使用するラベル)
+_LANGUAGE_LABELS = {
+    'english': '__label__en',
+    'japanese': '__label__ja',
+    'chinese': '__label__zh',
+}
 
 
 class HostIDEncoder(BaseEstimator, TransformerMixin):
@@ -38,7 +43,7 @@ class HostIDEncoder(BaseEstimator, TransformerMixin):
         self.continuous_features = continuous_features
 
     def fit(self, X: pd.DataFrame, y=None) -> object:
-        """_summary
+        """訓練データの学習。
 
         Parameters
         ----------
@@ -119,6 +124,8 @@ def _calculate_km(lat1: List[float],
 
 
 class NearestStations(BaseEstimator, TransformerMixin):
+    """最寄り駅の名称とそこまでの距離を特徴にする。
+    """
 
     def __init__(self, stations: pd.DataFrame, n_jobs: int = -1, verbose: int = 1):
         """Initializer.
@@ -215,6 +222,8 @@ class NearestStations(BaseEstimator, TransformerMixin):
 
 
 class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
+    """ある民泊から一定距離にある他の民泊数を特徴にする。
+    """
 
     def __init__(self, n_jobs: int = -1, verbose: int = 1):
         """Initializer.
@@ -267,24 +276,6 @@ class NeighborMinpakuCounter(BaseEstimator, TransformerMixin):
         del indices_and_distances
         self.distances_ = pd.DataFrame(data=data, index=indices, columns=indices)
         return self
-
-        # latitude = X['latitude'].tolist()
-        # longitude = X['longitude'].tolist()
-        # idx_pairs = [(i1, i2) for i1 in range(X.shape[0]) for i2 in range(X.shape[0])]
-        # distances = Parallel(n_jobs=self.n_jobs, verbose=self.verbose)(
-        #     delayed(_calculate_km)(latitude, longitude, latitude, longitude, i1, i2)
-        #     for i1, i2 in idx_pairs
-        # )
-        # data = [(X.index[i1], X.index[i2], km) for i1, i2, km in distances]
-        # del distances
-        # distances = pd.DataFrame(data, columns=['from', 'to', 'km'])
-
-        # distances = []
-        # for idx1, lat1, longi1 in zip(X.index, X['latitude'].to_numpy(), X['longitude'].to_numpy()):
-        #     for idx2, lat2, longi2 in zip(X.index, X['latitude'].to_numpy(), X['longitude'].to_numpy()):
-        #         distances.append((idx1, idx2, geodesic((lat1, longi1), (lat2, longi2)).km))
-        # distances = pd.DataFrame(data=distances, columns=['from', 'to', 'km'])
-        # self.distances_ = pd.pivot_table(data=distances, index=['from'], columns=['to'], values=['km'])
 
     def count_neighbors(self, idx: int, km: float) -> int:
         """指定された民泊から一定距離内にいくつの民泊があるのかをカウントする。
@@ -407,6 +398,8 @@ def vincenty_inverse(lat1, lon1, lat2, lon2, default=np.nan):
 
 
 class LocationClustering(BaseEstimator, TransformerMixin):
+    """KMeans により民泊の位置情報をクラスタリングし特徴を得る。
+    """
 
     def __init__(self, kmeans_args: dict = {'n_clusters': 9, 'random_state': 901}):
         self.kmeans_args = kmeans_args
@@ -467,15 +460,21 @@ class LocationClustering(BaseEstimator, TransformerMixin):
 
 
 class BertSequenceVectorizer:
+    """Bert pretrained model を用いて文章の embedding を得る。
+
+    以下の記事で紹介されているものを微改修したもの。
+    https://www.guruguru.science/competitions/16/discussions/fb792c87-6bad-445d-aa34-b4118fc378c1/
+    """
 
     def __init__(self, model_name: str, max_len: int):
         """Initializer.
 
-        このクラスは以下の記事で紹介されているものを微改修したもの。
-        https://www.guruguru.science/competitions/16/discussions/fb792c87-6bad-445d-aa34-b4118fc378c1/
-
-        `model_name`, `max_len` をパラメータ化した。
-        Bert model を明示的に evaluation mode にするようにした。`vectorize` は torch.inference_mode で実行するようにした。
+        Parameters
+        ----------
+        model_name : str
+            Bert pretrained model の名称。
+        max_len : int
+            文章の文字列長の上限。
         """
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model_name = model_name
@@ -509,12 +508,8 @@ class BertSequenceVectorizer:
 
 
 class LanguageWiseBertVectorizer(BaseEstimator, TransformerMixin):
-
-    LANGUAGE_LABELS = {
-        'english': '__label__en',
-        'japanese': '__label__ja',
-        'chinese': '__label__zh',
-    }
+    """言語に応じて適用する Bert pretrained model を変えながら embedding を得る。
+    """
 
     def __init__(
             self, model_name_en: str, model_name_ja: str, model_name_zh: str, language_detection_model_path: str,
@@ -581,11 +576,11 @@ class LanguageWiseBertVectorizer(BaseEstimator, TransformerMixin):
             probabilities.append(probability)
             label = prediction[0][0]
             labels.append(label)
-            if label == self.LANGUAGE_LABELS['english']:
+            if label == _LANGUAGE_LABELS['english']:
                 emb = self.bert_model_en.vectorize(sentence)
-            elif label == self.LANGUAGE_LABELS['japanese']:
+            elif label == _LANGUAGE_LABELS['japanese']:
                 emb = self.bert_model_ja.vectorize(sentence)
-            elif label == self.LANGUAGE_LABELS['chinese']:
+            elif label == _LANGUAGE_LABELS['chinese']:
                 emb = self.bert_model_zh.vectorize(sentence)
             else:
                 emb = self.bert_model_en.vectorize(sentence)
@@ -615,12 +610,9 @@ def return_dictionary_form(morpheme: sudachipy.Morpheme) -> str:
 
 
 class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
+    """言語に応じて異なる Tokenizer を適用して文章を分かち書き形式にする。
+    """
 
-    LANGUAGE_LABELS = {
-        'english': '__label__en',
-        'japanese': '__label__ja',
-        'chinese': '__label__zh',
-    }
     SEP = ' '
 
     def __init__(self, language_detection_model_path: str, split_mode: Optional[Literal['A', 'B', 'C']] = 'C',
@@ -654,9 +646,9 @@ class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
         for sentence in X:
             prediction = self.model.predict(sentence)
             label = prediction[0][0]
-            if label == self.LANGUAGE_LABELS['japanese']:
+            if label == _LANGUAGE_LABELS['japanese']:
                 bag_of_words = self.tokenize_ja(sentence)
-            elif label == self.LANGUAGE_LABELS['chinese']:
+            elif label == _LANGUAGE_LABELS['chinese']:
                 bag_of_words = self.tokenize_zh(sentence)
             else:
                 bag_of_words = sentence
@@ -664,10 +656,35 @@ class LanguageWiseTokenizer(BaseEstimator, TransformerMixin):
         return BOWs
 
     def tokenize_zh(self, sentence: str) -> str:
+        """中国語の文章を分かち書き形式にする。
+
+        Parameters
+        ----------
+        sentence : str
+            対象文章。中国語であることが期待される。
+
+        Returns
+        -------
+        bag_of_words : str
+            分かち書き形式にした文章。jieba を用いて得られる。
+        """
         bag_of_words = self.SEP.join(jieba.lcut(sentence))
         return bag_of_words
 
     def tokenize_ja(self, sentence: str) -> str:
+        """日本語の文章を分かち書き形式にする。
+
+        Parameters
+        ----------
+        sentence : str
+            対象文章。日本語であることが期待される。
+
+        Returns
+        -------
+        bag_of_words : str
+            分かち書き形式にした文章。sudachipy を用いて得られる。
+        """
+
         bag_of_words = []
         for morpheme in self._sudachipy_tokenizer.tokenize(sentence, self._mode):
             word = self.filter_func(morpheme)
